@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Môi trường ảo
+venv/
+.venv/
+env/
+
+# Biến môi trường & Secrets (QUAN TRỌNG: không bao giờ commit file này!)
+backend/.env
+client/config.json
+
+# Database SQLite (dữ liệu cá nhân, không cần commit)
+backend/database.db
+
+# Ảnh màn hình live (dữ liệu nhạy cảm)
+backend/static/latest_*.jpg
+
+# Thư mục static tạo tự động
+backend/static/
+
+# Log files
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo

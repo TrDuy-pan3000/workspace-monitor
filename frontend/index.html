@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="vi" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OLP AI - Hệ thống giám sát hiệu suất & Kỷ luật chéo</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        outfit: ['Outfit', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#fff7ed',
+                            100: '#ffedd5',
+                            500: '#f97316',
+                            600: '#ea580c',
+                            700: '#c2410c',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Custom Style CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen selection:bg-orange-500 selection:text-white">
+    
+    <!-- Background Decor -->
+    <div class="fixed top-0 left-0 w-full h-full pointer-events-none overflow-hidden -z-10 opacity-30">
+        <div class="absolute top-[-10%] left-[-10%] w-[50%] h-[50%] rounded-full bg-orange-600 blur-[150px]"></div>
+        <div class="absolute bottom-[-10%] right-[-10%] w-[50%] h-[50%] rounded-full bg-violet-600 blur-[150px]"></div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="max-w-7xl mx-auto px-4 py-6">
+        
+        <!-- Header Section -->
+        <header class="flex flex-col md:flex-row justify-between items-center gap-4 mb-8 pb-6 border-b border-slate-800/80">
+            <div class="flex items-center gap-3">
+                <div class="bg-orange-600/20 text-orange-500 p-3 rounded-2xl border border-orange-500/30">
+                    <i class="fa-solid fa-brain text-3xl animate-pulse"></i>
+                </div>
+                <div>
+                    <h1 class="font-outfit text-2xl md:text-3xl font-extrabold tracking-tight bg-gradient-to-r from-orange-500 via-amber-400 to-violet-500 bg-clip-text text-transparent">
+                        OLP AI WORKSPACE
+                    </h1>
+                    <p class="text-xs text-slate-400">Hệ thống Giám sát & Kỷ luật Chéo Ôn thi Olympic Tin học AI</p>
+                </div>
+            </div>
+
+            <!-- Streak Counter -->
+            <div class="flex items-center gap-4 bg-slate-900/60 backdrop-blur-md px-6 py-3 rounded-2xl border border-slate-800 shadow-xl">
+                <div class="flex items-center gap-2">
+                    <span class="text-3xl text-orange-500 animate-bounce">🔥</span>
+                    <div>
+                        <div class="text-xs text-slate-400 uppercase tracking-widest font-semibold">Chuỗi Streak</div>
+                        <div class="font-outfit text-xl font-extrabold text-orange-400" id="streak-counter">0 ngày</div>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Workspace Grid -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <!-- Column 1: Member 1 Card -->
+            <div class="card lg:col-span-1 bg-slate-900/40 backdrop-blur-md p-6 rounded-3xl border border-slate-800/60 shadow-lg flex flex-col gap-6" id="user-card-1">
+                <!-- User Header -->
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-full bg-orange-600/10 border border-orange-500/30 flex items-center justify-center font-outfit font-bold text-lg text-orange-400" id="avatar-char-1">
+                            1
+                        </div>
+                        <div>
+                            <h2 class="font-outfit text-lg font-bold" id="username-1">Thành viên 1</h2>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700" id="status-1">
+                                <span class="h-2 w-2 rounded-full bg-slate-500"></span> Offline
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[10px] text-slate-400 uppercase tracking-wider">Hôm nay</div>
+                        <div class="font-outfit text-2xl font-black text-slate-200" id="hours-1">0.0h</div>
+                    </div>
+                </div>
+
+                <!-- KPI Progress Bar -->
+                <div>
+                    <div class="flex justify-between text-xs mb-1.5">
+                        <span class="text-slate-400">Tiến độ KPI</span>
+                        <span class="font-semibold text-orange-400" id="kpi-percent-1">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-800/80 rounded-full h-2.5 overflow-hidden">
+                        <div class="bg-gradient-to-r from-orange-500 to-amber-400 h-full rounded-full transition-all duration-500" id="kpi-bar-1" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Active Application Title -->
+                <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800/80">
+                    <div class="text-[10px] text-slate-400 mb-1 flex items-center gap-1">
+                        <i class="fa-solid fa-window-restore text-slate-500"></i> Cửa sổ hiện tại
+                    </div>
+                    <div class="text-xs font-medium truncate" id="window-title-1">Không có dữ liệu</div>
+                </div>
+
+                <!-- Tabs: Chart vs Live Screen -->
+                <div class="flex flex-col flex-grow gap-4">
+                    <div class="flex bg-slate-950/50 p-1 rounded-xl border border-slate-800">
+                        <button class="flex-1 text-xs py-2 rounded-lg font-semibold bg-slate-800 text-white transition-all shadow-sm" id="btn-tab-chart-1" onclick="switchUserTab(1, 'chart')">
+                            <i class="fa-solid fa-chart-pie mr-1"></i> Hiệu suất
+                        </button>
+                        <button class="flex-1 text-xs py-2 rounded-lg font-semibold text-slate-400 hover:text-white transition-all" id="btn-tab-screen-1" onclick="switchUserTab(1, 'screen')">
+                            <i class="fa-solid fa-desktop mr-1"></i> Live Screen
+                        </button>
+                    </div>
+
+                    <!-- Content Tab: Chart -->
+                    <div id="content-chart-1" class="space-y-4">
+                        <div class="h-44 flex items-center justify-center">
+                            <canvas id="chart-pie-1"></canvas>
+                        </div>
+                        <div class="h-28 flex items-center justify-center">
+                            <canvas id="chart-line-1"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Content Tab: Screen -->
+                    <div id="content-screen-1" class="hidden flex-grow flex flex-col justify-center items-center">
+                        <div class="relative w-full rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 flex justify-center items-center h-72">
+                            <img src="" id="screen-img-1" class="max-h-full object-contain cursor-zoom-in" onclick="zoomImage(this.src)" alt="Chưa có ảnh chụp màn hình" onerror="this.src='https://placehold.co/600x400/18181b/a1a1aa?text=Chua+co+hinh+anh'"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Column 2: Member 2 Card -->
+            <div class="card lg:col-span-1 bg-slate-900/40 backdrop-blur-md p-6 rounded-3xl border border-slate-800/60 shadow-lg flex flex-col gap-6" id="user-card-2">
+                <!-- User Header -->
+                <div class="flex justify-between items-center">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-full bg-violet-600/10 border border-violet-500/30 flex items-center justify-center font-outfit font-bold text-lg text-violet-400" id="avatar-char-2">
+                            2
+                        </div>
+                        <div>
+                            <h2 class="font-outfit text-lg font-bold" id="username-2">Thành viên 2</h2>
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-800 text-slate-400 border border-slate-700" id="status-2">
+                                <span class="h-2 w-2 rounded-full bg-slate-500"></span> Offline
+                            </span>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[10px] text-slate-400 uppercase tracking-wider">Hôm nay</div>
+                        <div class="font-outfit text-2xl font-black text-slate-200" id="hours-2">0.0h</div>
+                    </div>
+                </div>
+
+                <!-- KPI Progress Bar -->
+                <div>
+                    <div class="flex justify-between text-xs mb-1.5">
+                        <span class="text-slate-400">Tiến độ KPI</span>
+                        <span class="font-semibold text-violet-400" id="kpi-percent-2">0%</span>
+                    </div>
+                    <div class="w-full bg-slate-800/80 rounded-full h-2.5 overflow-hidden">
+                        <div class="bg-gradient-to-r from-violet-600 to-fuchsia-500 h-full rounded-full transition-all duration-500" id="kpi-bar-2" style="width: 0%"></div>
+                    </div>
+                </div>
+
+                <!-- Active Application Title -->
+                <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800/80">
+                    <div class="text-[10px] text-slate-400 mb-1 flex items-center gap-1">
+                        <i class="fa-solid fa-window-restore text-slate-500"></i> Cửa sổ hiện tại
+                    </div>
+                    <div class="text-xs font-medium truncate" id="window-title-2">Không có dữ liệu</div>
+                </div>
+
+                <!-- Tabs: Chart vs Live Screen -->
+                <div class="flex flex-col flex-grow gap-4">
+                    <div class="flex bg-slate-950/50 p-1 rounded-xl border border-slate-800">
+                        <button class="flex-1 text-xs py-2 rounded-lg font-semibold bg-slate-800 text-white transition-all shadow-sm" id="btn-tab-chart-2" onclick="switchUserTab(2, 'chart')">
+                            <i class="fa-solid fa-chart-pie mr-1"></i> Hiệu suất
+                        </button>
+                        <button class="flex-1 text-xs py-2 rounded-lg font-semibold text-slate-400 hover:text-white transition-all" id="btn-tab-screen-2" onclick="switchUserTab(2, 'screen')">
+                            <i class="fa-solid fa-desktop mr-1"></i> Live Screen
+                        </button>
+                    </div>
+
+                    <!-- Content Tab: Chart -->
+                    <div id="content-chart-2" class="space-y-4">
+                        <div class="h-44 flex items-center justify-center">
+                            <canvas id="chart-pie-2"></canvas>
+                        </div>
+                        <div class="h-28 flex items-center justify-center">
+                            <canvas id="chart-line-2"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- Content Tab: Screen -->
+                    <div id="content-screen-2" class="hidden flex-grow flex flex-col justify-center items-center">
+                        <div class="relative w-full rounded-2xl overflow-hidden border border-slate-800 bg-slate-950 flex justify-center items-center h-72">
+                            <img src="" id="screen-img-2" class="max-h-full object-contain cursor-zoom-in" onclick="zoomImage(this.src)" alt="Chưa có ảnh chụp màn hình" onerror="this.src='https://placehold.co/600x400/18181b/a1a1aa?text=Chua+co+hinh+anh'"/>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Column 3: Giáo án -->
+            <div class="lg:col-span-1 flex flex-col gap-6">
+                <!-- Section: Giáo án tuần -->
+                <div class="bg-slate-900/40 backdrop-blur-md p-6 rounded-3xl border border-slate-800/60 shadow-lg flex flex-col flex-grow">
+                    <h3 class="font-outfit text-md font-bold mb-3 flex items-center gap-2 border-b border-slate-800/80 pb-2">
+                        <i class="fa-solid fa-book-open text-orange-500"></i> Giáo án Tuần Này
+                    </h3>
+                    <div class="overflow-y-auto flex-grow pr-1 space-y-3 scrollbar" id="study-plan-container">
+                        <div class="text-xs text-slate-400 italic">Đang tải giáo án...</div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+    </div>
+
+    <!-- Floating Chat Widget -->
+    <div class="fixed bottom-6 right-6 z-50 flex flex-col items-end">
+        <!-- Floating Chat Window (Kính mờ, bóng bẩy) -->
+        <div id="chat-widget-window" class="hidden w-[365px] h-[480px] bg-slate-900/90 backdrop-blur-xl border border-slate-800/80 rounded-3xl shadow-2xl flex flex-col mb-4 overflow-hidden transition-all duration-300">
+            <!-- Window Header -->
+            <div class="bg-gradient-to-r from-violet-600 to-indigo-600 px-4 py-3.5 flex justify-between items-center text-white border-b border-violet-500/20">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-robot animate-bounce text-sm text-violet-200"></i>
+                    <span class="font-outfit font-bold text-sm tracking-wide">AI UI Controller</span>
+                </div>
+                <button onclick="toggleChatWidget()" class="text-white/80 hover:text-white transition-all">
+                    <i class="fa-solid fa-xmark text-sm"></i>
+                </button>
+            </div>
+            <!-- Chat Messages Container -->
+            <div id="chat-messages-container" class="flex-grow overflow-y-auto p-4 space-y-3 text-xs scrollbar bg-slate-950/20 flex flex-col">
+                <div class="bg-violet-950/30 border border-violet-500/20 text-slate-300 p-3 rounded-2xl rounded-tl-none self-start max-w-[85%] chat-message-text">Xin chào! Tôi là Trợ lý AI quản trị hệ thống. Bạn có thể ra lệnh bằng văn bản tự nhiên để cấu hình hệ thống hoặc điều khiển giao diện web.<br><br>Ví dụ:<br>- <i>"Đổi sang tab Screen của bluebird"</i><br>- <i>"Đổi KPI học tập thành 3.0 tiếng"</i><br>- <i>"Tải lại Dashboard"</i></div>
+            </div>
+            <!-- Input Area -->
+            <div class="p-3 border-t border-slate-800/80 bg-slate-950/40 flex gap-2">
+                <input type="text" id="chat-input" class="flex-grow bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-violet-500 transition-all" placeholder="Gõ lệnh điều khiển..."/>
+                <button id="btn-send-command" class="bg-violet-600 hover:bg-violet-700 text-white rounded-xl px-3.5 flex items-center justify-center transition-all shadow-md focus:outline-none" onclick="sendAICommand()">
+                    <i class="fa-solid fa-paper-plane text-xs"></i>
+                </button>
+            </div>
+        </div>
+
+        <!-- Floating Action Button (FAB) -->
+        <button id="chat-widget-button" onclick="toggleChatWidget()" class="w-14 h-14 bg-gradient-to-r from-violet-600 to-indigo-600 text-white rounded-full shadow-2xl flex items-center justify-center hover:scale-110 active:scale-95 transition-all duration-300 border border-violet-400/20 relative group">
+            <i class="fa-solid fa-comments text-xl group-hover:rotate-12 transition-transform duration-300"></i>
+            <span class="absolute top-0 right-0 h-3 w-3 rounded-full bg-emerald-500 border-2 border-slate-950 animate-ping"></span>
+            <span class="absolute top-0 right-0 h-3 w-3 rounded-full bg-emerald-500 border-2 border-slate-950"></span>
+        </button>
+    </div>
+
+    <!-- Modal Zoom Live Screen -->
+    <div id="image-modal" class="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 hidden flex justify-center items-center p-4 cursor-zoom-out" onclick="closeImageModal()">
+        <img src="" id="modal-img" class="max-w-full max-h-full object-contain rounded-lg border border-slate-800" alt="Full screen preview"/>
+    </div>
+
+    <!-- Scripts -->
+    <script src="app.js"></script>
+</body>
+</html>

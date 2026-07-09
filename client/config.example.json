@@ -1,0 +1,8 @@
+{
+  "server_url": "http://YOUR_VPS_IP:8000",
+  "api_key": "default_olp_key_2026",
+  "username": "YOUR_USERNAME",
+  "idle_threshold_seconds": 300,
+  "check_interval_seconds": 120,
+  "live_screen_interval_seconds": 900
+}

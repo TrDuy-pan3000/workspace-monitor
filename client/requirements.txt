@@ -1,0 +1,6 @@
+requests
+pywinctl
+pynput
+pyautogui
+Pillow
+pywin32
