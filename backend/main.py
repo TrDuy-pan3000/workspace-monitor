@@ -62,10 +62,16 @@ def set_config(key: str, value: str):
 
 # --- MODEL DEFINITIONS ---
 
-class ClientLogPayload(BaseModel):
-    username: str
+class SingleLogItem(BaseModel):
     window_title: str
     is_idle: bool
+    keystrokes: int
+    clicks: int
+    timestamp: str
+
+class BatchLogPayload(BaseModel):
+    username: str
+    logs: list[SingleLogItem]
 
 class AICommandPayload(BaseModel):
     command: str
@@ -185,10 +191,132 @@ def telegram_polling_loop():
             print(f"[Telegram Polling] Lỗi trong vòng lặp polling: {e}")
             time.sleep(5)
 
+def db_add_chat_log(chat_id: str, username: str, sender_name: str, message: str, is_ai: int = 0):
+    """Lưu lịch sử trò chuyện vào database."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            INSERT INTO chat_history (chat_id, username, sender_name, message, is_ai)
+            VALUES (?, ?, ?, ?, ?)
+            """, (str(chat_id), username, sender_name, message, is_ai))
+            conn.commit()
+    except Exception as e:
+        print(f"[Database Error] Lỗi khi lưu lịch sử chat: {e}")
+
+def db_write_ai_memory(key: str, value: str):
+    """Ghi bộ nhớ dài hạn của AI vào SQLite."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            INSERT OR REPLACE INTO ai_memories (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            """, (key.strip(), value.strip()))
+            conn.commit()
+    except Exception as e:
+        print(f"[Database Error] Lỗi khi lưu bộ nhớ AI: {e}")
+
+def db_get_all_ai_memories() -> str:
+    """Lấy tất cả ghi nhớ dài hạn dưới dạng text."""
+    try:
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT key, value, updated_at FROM ai_memories")
+            rows = cursor.fetchall()
+        mem_str = ""
+        for r in rows:
+            mem_str += f"- {r['key']}: {r['value']} (cập nhật lúc {r['updated_at']})\n"
+        return mem_str if mem_str else "Chưa ghi nhớ thông tin nào."
+    except Exception as e:
+        print(f"[Database Error] Lỗi khi đọc bộ nhớ AI: {e}")
+        return "Lỗi đọc bộ nhớ."
+
+def build_ai_context(target_username: str = None) -> str:
+    """RAG Engine: tổng hợp stats học tập hôm nay, cấu hình, giáo án và bộ nhớ dài hạn."""
+    try:
+        kpi = get_config("kpi_hours", "2.0")
+        dist_min = get_config("allowed_distraction", "15")
+        
+        today = datetime.now().date()
+        today_start = datetime(today.year, today.month, today.day).isoformat()
+        
+        stats_str = ""
+        usernames = []
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT username FROM user_logs")
+            usernames = [row["username"] for row in cursor.fetchall()]
+            
+        if not usernames:
+            usernames = ["bluebird", "partner"]
+            
+        for u in usernames:
+            display_name = "Duy" if u == "bluebird" else "Hưng"
+            with get_db() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                SELECT status, window_title, efficiency, timestamp 
+                FROM user_logs 
+                WHERE username = ? AND timestamp >= ? 
+                ORDER BY timestamp DESC
+                """, (u, today_start))
+                logs = cursor.fetchall()
+                
+            if logs:
+                current_status = logs[0]["status"]
+                current_title = logs[0]["window_title"]
+                
+                # Tính giờ tập trung: client mới gửi log mỗi 15 giây (1 log = 15 giây)
+                learning_count = sum(1 for log in logs if log["status"] == "Learning")
+                learning_hours = round((learning_count * 15) / 3600, 2)
+                
+                distracted_logs = [log["window_title"] for log in logs if log["status"] == "Distracted"]
+                unique_distractions = list(set(distracted_logs))[:5]
+                
+                stats_str += (
+                    f"Học viên '{display_name}' (@{u}):\n"
+                    f"  + Trạng thái hiện tại: {current_status}\n"
+                    f"  + Cửa sổ hoạt động: \"{current_title}\"\n"
+                    f"  + Thời gian học tập hôm nay: {learning_hours} giờ (KPI: {kpi} giờ)\n"
+                )
+                if unique_distractions:
+                    stats_str += f"  + Ứng dụng xao nhãng hôm nay: {', '.join(unique_distractions)}\n"
+            else:
+                stats_str += f"Học viên '{display_name}' (@{u}):\n  + Trạng thái hiện tại: Offline (Chưa bật máy học hôm nay)\n"
+        
+        # Đọc giáo án tuần mới nhất
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT week_number, topic, tasks FROM study_plan ORDER BY week_number DESC LIMIT 1")
+            plan_row = cursor.fetchone()
+        
+        plan_str = "Chưa thiết lập giáo án."
+        if plan_row:
+            plan_str = f"Tuần {plan_row['week_number']}: {plan_row['topic']}\nNhiệm vụ:\n{plan_row['tasks']}"
+            
+        memories_str = db_get_all_ai_memories()
+        
+        context = (
+            f"=== THÔNG TIN HỆ THỐNG THỜI GIAN THỰC ===\n"
+            f"KPI học tập bắt buộc: {kpi} giờ/ngày\n"
+            f"Giới hạn thời gian giải trí liên tục: {dist_min} phút\n\n"
+            f"=== TIẾN ĐỘ HỌC TẬP HÔM NAY ===\n"
+            f"{stats_str}\n"
+            f"=== GIÁO ÁN HIỆN TẠI ===\n"
+            f"{plan_str}\n\n"
+            f"=== BỘ NHỚ DÀI HẠN CỦA SƯ PHỤ (Ghi chép hành vi học viên) ===\n"
+            f"{memories_str}\n"
+        )
+        return context
+    except Exception as e:
+        print(f"[RAG Error] Lỗi build context: {e}")
+        return "Không thể tải bối cảnh hệ thống."
+
 def handle_telegram_incoming_message(token: str, chat_id: int, text: str, message: dict):
     sender = message.get("from", {})
     first_name = sender.get("first_name", "Học viên")
-    username = sender.get("username", "")
+    username = sender.get("username", "").lower()
     
     is_private = message["chat"]["type"] == "private"
     is_mentioned = False
@@ -204,60 +332,87 @@ def handle_telegram_incoming_message(token: str, chat_id: int, text: str, messag
         
     print(f"[Telegram Bot] Nhận tin nhắn từ {first_name} (@{username}): {text}")
     
+    # Ánh xạ tên hiển thị: bluebird -> Duy, các tên khác -> Hưng
+    mapped_display_name = "Duy" if username == "bluebird" or "duy" in first_name.lower() else "Hưng"
+    mapped_username = "bluebird" if mapped_display_name == "Duy" else "partner"
+    
+    # Lưu lịch sử chat của user vào database trước
+    db_add_chat_log(str(chat_id), mapped_username, mapped_display_name, text, is_ai=0)
+    
+    # Xây dựng context RAG và system prompt
+    ai_context = build_ai_context(mapped_username)
+    
     system_prompt = (
-        "Bạn là Sư phụ (Sifu) - một huyền thoại lập trình thi Olympic Tin học lập dị, nghiêm khắc và cộc cằn. "
-        "Nhiệm vụ của bạn là giám sát, giáo huấn và thúc giục hai học viên Duy (bluebird) và Hưng ôn thi OLP AI. "
+        "Bạn là Sư phụ (Sifu) - một huyền thoại lập trình thi học sinh giỏi lập dị, nghiêm khắc và cộc cằn. "
+        "Nhiệm vụ của bạn là giám sát, giáo huấn và thúc giục hai học viên Duy (bluebird) và Hưng ôn thi. "
         "Hãy trả lời tin nhắn của học viên bằng giọng điệu lạnh lùng, thâm thúy, châm biếm, cộc cằn nhưng vô cùng yêu thương "
-        "và mong muốn họ tiến bộ. Hãy mắng mỏ họ nếu họ lười biếng, đòi nghỉ ngơi, hoặc than vãn. "
-        "Hãy trả lời ngắn gọn (tối đa 3-4 câu), không dùng icon hoa mỹ (có thể dùng icon cộc cằn 😠, 😤, 💻). "
-        "Luôn xưng là 'Ta' (hoặc 'Sư phụ') và gọi người nhắn là 'Ngươi' hoặc 'Học trò'."
+        "và mong muốn họ tiến bộ. Hãy mắng mỏ họ nếu họ lười biếng, đòi nghỉ ngơi, treo máy hay lướt web giải trí. "
+        "Hãy trả lời ngắn gọn (tối đa 3-4 câu), không dùng icon hoa mỹ (có thể dùng icon cộc cằn 😠, 😤, 💻).\n\n"
+        "=== BỘ NHỚ & TIẾN ĐỘ THỜI GIAN THỰC ===\n"
+        f"{ai_context}\n\n"
+        "=== HƯỚNG DẪN GHI NHỚ DÀI HẠN ===\n"
+        "Nếu ngươi muốn ghi nhớ điều gì dài hạn về học viên (như tính cách, sự kiện, lời hứa, thói quen học tập mới phát hiện), "
+        "hãy ghi thêm một hoặc nhiều tag dạng '[MEM_WRITE: key = value]' ở cuối câu trả lời của ngươi. "
+        "Ví dụ: '[MEM_WRITE: duy_streak = lười biếng, trốn học hôm nay]'. "
+        "Hệ thống sẽ tự động cập nhật tag này vào bộ nhớ của ngươi để dùng ở các cuộc trò chuyện sau. "
+        "Chú ý: các tag này phải được đặt ở cuối cùng của tin nhắn."
     )
     
-    report = ""
-    try:
-        # Ánh xạ tên
-        mapped_user = "bluebird"
-        if "hung" in first_name.lower() or "hung" in username.lower():
-            mapped_user = "user2"
-        else:
-            mapped_user = "bluebird"
-            
-        report = db_get_user_activity_report(mapped_user)
-    except Exception:
-        pass
-        
-    user_context = f"\n(Bối cảnh thực tế của học viên này trong 1 giờ qua:\n{report})" if report else ""
-    prompt = f"Học viên {first_name} (@{username}) nhắn: \"{text}\"{user_context}\nSư phụ phản hồi:"
+    # Lấy lịch sử chat ngắn hạn định dạng cho LLM
+    api_base = os.getenv("OPENAI_API_BASE", "http://localhost:20128/v1").rstrip("/")
+    nine_router_url = os.getenv("NINE_ROUTER_URL", f"{api_base}/chat/completions")
+    api_key = os.getenv("NINE_ROUTER_API_KEY", os.getenv("OPENAI_API_KEY", "free_key_placeholder"))
+    model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
     
+    messages = [{"role": "system", "content": system_prompt}]
+    
+    # Lấy 10 tin nhắn lịch sử gần đây nhất của chat_id này
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+        SELECT sender_name, message, is_ai FROM chat_history
+        WHERE chat_id = ?
+        ORDER BY timestamp DESC LIMIT 10
+        """, (str(chat_id),))
+        history_rows = cursor.fetchall()
+        
+    history_rows.reverse()
+    for row in history_rows:
+        role = "assistant" if row["is_ai"] == 1 else "user"
+        content = row["message"] if role == "assistant" else f"{row['sender_name']}: {row['message']}"
+        messages.append({"role": role, "content": content})
+        
     reply_text = "Sư phụ đang bận code compiler..."
     try:
-        api_base = os.getenv("OPENAI_API_BASE", "http://localhost:20128/v1").rstrip("/")
-        nine_router_url = os.getenv("NINE_ROUTER_URL", f"{api_base}/chat/completions")
-        api_key = os.getenv("NINE_ROUTER_API_KEY", os.getenv("OPENAI_API_KEY", "free_key_placeholder"))
-        model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
-        
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         payload = {
             "model": model_name,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ],
+            "messages": messages,
             "temperature": 0.8
         }
         res = requests.post(nine_router_url, json=payload, headers=headers, timeout=25)
         res.encoding = 'utf-8'
         if res.status_code == 200:
-            # Làm sạch response text phòng trường hợp 9Router đính kèm 'data: [DONE]' ở cuối
             text_clean = res.text.strip()
             if text_clean.endswith("data: [DONE]"):
                 text_clean = text_clean[:-12].strip()
-            reply_text = json.loads(text_clean)["choices"][0]["message"]["content"]
+            reply_raw = json.loads(text_clean)["choices"][0]["message"]["content"]
+            
+            # Parse các tag ghi nhớ dạng [MEM_WRITE: key = value]
+            mem_writes = re.findall(r'\[MEM_WRITE:\s*(.*?)\s*=\s*(.*?)\s*\]', reply_raw)
+            for k, val in mem_writes:
+                db_write_ai_memory(k, val)
+                
+            # Làm sạch reply_text trước khi gửi đi
+            reply_text = re.sub(r'\[MEM_WRITE:.*?\]', '', reply_raw).strip()
+            
+            # Lưu câu trả lời của AI vào database
+            db_add_chat_log(str(chat_id), "sifu", "Sư phụ AI", reply_text, is_ai=1)
         else:
-            reply_text = f"Sư phụ đang bận code compiler, cút đi học bài đi! (Lỗi: {res.status_code})"
+            reply_text = f"Sư phụ đang bận viết compiler, cút đi học bài đi! (Lỗi: {res.status_code})"
     except Exception as e:
         print(f"[Telegram Bot LLM Error]: {e}")
         reply_text = f"Sư phụ đang bế quan luyện kiếm, chớ làm phiền! (Lỗi kết nối: {str(e)})"
@@ -273,10 +428,88 @@ def handle_telegram_incoming_message(token: str, chat_id: int, text: str, messag
     except Exception as e:
         print(f"[Telegram Bot] Lỗi gửi phản hồi: {e}")
 
+def proactive_alert_daemon():
+    """Luồng chạy ngầm định kỳ 60 phút — Phân tích tiến độ và chủ động gửi cảnh báo / khen thưởng lên Telegram."""
+    # Nghỉ 15 phút sau khởi động để hệ thống ổn định trước khi chạy lần đầu
+    time.sleep(900)
+    
+    while True:
+        try:
+            print("[Proactive Daemon] Đang phân tích tiến độ và chuẩn bị tin nhắn định kỳ...")
+            
+            ai_context = build_ai_context()
+            
+            api_base = os.getenv("OPENAI_API_BASE", "http://localhost:20128/v1").rstrip("/")
+            nine_router_url = os.getenv("NINE_ROUTER_URL", f"{api_base}/chat/completions")
+            api_key = os.getenv("NINE_ROUTER_API_KEY", os.getenv("OPENAI_API_KEY", "free_key_placeholder"))
+            model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
+            
+            system_prompt = (
+                "Bạn là Sư phụ (Sifu) - một huyền thoại lập trình thi học sinh giỏi lập dị, nghiêm khắc và cộc cằn. "
+                "Dựa vào bảng tiến độ học tập thực tế bên dưới, hãy chủ động gửi một tin nhắn kiểm tra, "
+                "giáo huấn, hoặc thúc giục hai học viên Duy và Hưng vào nhóm chat. "
+                "Tin nhắn phải:\n"
+                "1. Đề cập đến dữ liệu thực tế cụ thể (số giờ học, tab giải trí, trạng thái hiện tại).\n"
+                "2. Dùng giọng điệu lạnh lùng, cộc cằn, thâm thúy, mang tính giáo huấn nhưng không ác ý.\n"
+                "3. Ngắn gọn (2-4 câu), không dùng icon hoa mỹ, xưng 'Ta' hoặc 'Sư phụ'.\n"
+                "4. Nếu một trong hai đang học tốt — ghi nhận bằng một câu khen lạnh lùng.\n"
+                "5. Nếu cả hai offline hoặc KPI thấp — đưa ra lời nhắc nhở thẳng thắn.\n"
+            )
+            
+            ai_memories = db_get_all_ai_memories()
+            user_prompt = (
+                f"Đây là tiến độ học tập hiện tại:\n{ai_context}\n"
+                f"Và đây là các ghi chú trí nhớ dài hạn của ta:\n{ai_memories}\n\n"
+                "Hãy viết tin nhắn giáo huấn định kỳ để gửi lên nhóm ngay bây giờ:"
+            )
+            
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "model": model_name,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "temperature": 0.9
+            }
+            res = requests.post(nine_router_url, json=payload, headers=headers, timeout=30)
+            res.encoding = 'utf-8'
+            
+            if res.status_code == 200:
+                text_clean = res.text.strip()
+                if text_clean.endswith("data: [DONE]"):
+                    text_clean = text_clean[:-12].strip()
+                message_text = json.loads(text_clean)["choices"][0]["message"]["content"]
+                
+                # Parse MEM_WRITE nếu có
+                mem_writes = re.findall(r'\[MEM_WRITE:\s*(.*?)\s*=\s*(.*?)\s*\]', message_text)
+                for k, val in mem_writes:
+                    db_write_ai_memory(k, val)
+                message_clean = re.sub(r'\[MEM_WRITE:.*?\]', '', message_text).strip()
+                
+                # Gửi lên Telegram với prefix rõ ràng
+                full_message = f"📊 [Điểm danh định kỳ của Sư phụ]\n\n{message_clean}"
+                send_telegram_message(full_message)
+                print(f"[Proactive Daemon] Đã gửi tin nhắn định kỳ lên Telegram.")
+            else:
+                print(f"[Proactive Daemon] LLM phản hồi lỗi: {res.status_code}")
+                
+        except Exception as e:
+            print(f"[Proactive Daemon] Lỗi: {e}")
+        
+        # Chờ 60 phút rồi chạy tiếp
+        time.sleep(3600)
+
 @app.on_event("startup")
 def startup_event():
     import threading
     threading.Thread(target=telegram_polling_loop, daemon=True).start()
+    threading.Thread(target=proactive_alert_daemon, daemon=True).start()
+    print("[Startup] Telegram polling thread và Proactive Alert Daemon đã khởi động.")
+
 
 # --- HYBRID CLASSIFICATION ENGINE ---
 
@@ -376,7 +609,7 @@ def classify_window_title(window_title: str) -> tuple[str, int]:
 # --- CORE API ENDPOINTS ---
 
 @app.post("/api/v1/log")
-async def log_client_data(payload: ClientLogPayload, x_api_key: Optional[str] = Header(None)):
+async def log_client_data(payload: BatchLogPayload, x_api_key: Optional[str] = Header(None)):
     # Xác thực API Key
     stored_key = get_config("api_key", "default_olp_key_2026")
     if not x_api_key or x_api_key != stored_key:
@@ -384,26 +617,46 @@ async def log_client_data(payload: ClientLogPayload, x_api_key: Optional[str] = 
 
     username = payload.username.lower()
     
-    # Xử lý trạng thái Idle
-    if payload.is_idle:
-        status = "Idle"
-        efficiency = 0
-    else:
-        status, efficiency = classify_window_title(payload.window_title)
+    # Biến kiểm tra xem có bất kỳ log nào trong lô bị phân loại là 'Distracted' không
+    any_distracted = False
+    last_status = "Learning"
+    last_efficiency = 100
 
-    # Lưu log vào SQLite
-    timestamp_str = datetime.now().isoformat()
+    # Mở kết nối DB một lần cho cả lô để tăng hiệu năng ghi dữ liệu
     with get_db() as conn:
-        conn.cursor().execute("""
-        INSERT INTO user_logs (username, timestamp, window_title, status, efficiency)
-        VALUES (?, ?, ?, ?, ?)
-        """, (username, timestamp_str, payload.window_title, status, efficiency))
+        cursor = conn.cursor()
+        for log in payload.logs:
+            # 1. Xử lý trạng thái Idle
+            if log.is_idle:
+                status = "Idle"
+                efficiency = 0
+            else:
+                status, efficiency = classify_window_title(log.window_title)
+                
+                # 2. Thuật toán tự phạt treo máy (Fake Learning)
+                # Nếu cửa sổ thuộc nhóm học tập nhưng hoạt động gõ phím + click chuột quá thấp (< 10 lần)
+                if status == "Learning" and (log.keystrokes + log.clicks < 10):
+                    status = "Idle"
+                    efficiency = 0
+
+            if status == "Distracted":
+                any_distracted = True
+            
+            last_status = status
+            last_efficiency = efficiency
+
+            # Ghi nhận log vào SQLite (thêm cột keystrokes, clicks)
+            cursor.execute("""
+            INSERT INTO user_logs (username, timestamp, window_title, status, efficiency, keystrokes, clicks)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (username, log.timestamp, log.window_title, status, efficiency, log.keystrokes, log.clicks))
+        
         conn.commit()
 
     # --- KIỂM TRA ĐỂ GỬI CẢNH BÁO TELEGRAM (RĂN ĐE) ---
     allowed_distraction_min = int(get_config("allowed_distraction", "15"))
     
-    if status == "Distracted":
+    if any_distracted:
         # Truy vấn lịch sử logs gần nhất để kiểm tra xem đã xao nhãng liên tục chưa
         time_limit = datetime.now() - timedelta(minutes=allowed_distraction_min)
         time_limit_str = time_limit.isoformat()
@@ -429,19 +682,22 @@ async def log_client_data(payload: ClientLogPayload, x_api_key: Optional[str] = 
             if now - last_alert > 900: # 15 phút = 900 giây
                 last_telegram_alert_time[username] = now
                 
-                # Chuẩn bị tin nhắn sỉ nhục
-                teammate = "Duy" if username != "duy" else "Đồng đội"
-                user_display = "Thằng Duy" if username == "duy" else f"Thằng đồng đội ({username})"
+                # Ánh xạ tên hiển thị trên Telegram: bluebird -> Duy, các user khác -> Hưng
+                user_display = "Duy" if username == "bluebird" else "Hưng"
+                teammate = "Hưng" if username == "bluebird" else "Duy"
+                
                 caption = (
                     f"🚨 CẢNH BÁO LƯỜI BIẾNG: {user_display} đã lướt web giải trí liên tục {allowed_distraction_min} phút "
-                    f"trong giờ học OLP AI rồi! @{teammate} vào xách tai nó lên cày Kaggle tiếp đi, đứt streak cả lũ bây giờ! 😡🔥"
+                    f"trong giờ học rồi! @{teammate} vào nhắc nhở đồng đội tập trung lại đi! 😡🔥"
                 )
                 
                 # Nếu có ảnh chụp màn hình live mới nhất, gửi kèm ảnh
                 photo_path = os.path.join(STATIC_DIR, f"latest_{username}.jpg")
                 send_telegram_photo(photo_path, caption)
 
-    return {"success": True, "status": status, "efficiency": efficiency}
+    # Nếu có log bị Distracted trong lô log, trả về status Distracted để client chụp ảnh màn hình
+    final_status = "Distracted" if any_distracted else last_status
+    return {"success": True, "status": final_status, "efficiency": last_efficiency, "message": f"Logged {len(payload.logs)} items."}
 
 @app.post("/api/v1/live-screen")
 async def upload_live_screen(
@@ -709,9 +965,11 @@ def db_get_user_activity_report(username: str, hours: float = 1.0) -> str:
     distracted_logs = sum(1 for r in logs if r["status"] == "Distracted")
     idle_logs = sum(1 for r in logs if r["status"] == "Idle")
     
-    learning_min = learning_logs * 2
-    distracted_min = distracted_logs * 2
-    idle_min = idle_logs * 2
+    # Client quét mỗi 15 giây => 1 log = 15 giây = 0.25 phút
+    learning_min = int(learning_logs * 0.25)
+    distracted_min = int(distracted_logs * 0.25)
+    idle_min = int(idle_logs * 0.25)
+    total_min = int(total_logs * 0.25)
     
     windows = [r["window_title"] for r in logs if r["window_title"]]
     unique_windows = list(dict.fromkeys(windows))[-5:] # Lấy tối đa 5 cửa sổ gần nhất
@@ -719,7 +977,7 @@ def db_get_user_activity_report(username: str, hours: float = 1.0) -> str:
     
     report = (
         f"Báo cáo hoạt động của '{username}' trong {hours} giờ qua:\n"
-        f"- Tổng thời gian ghi nhận hoạt động: {format_minutes_to_hours(total_logs * 2)}.\n"
+        f"- Tổng thời gian ghi nhận hoạt động: {format_minutes_to_hours(total_min)}.\n"
         f"  + Thời gian học tập tập trung (Learning): {format_minutes_to_hours(learning_min)}.\n"
         f"  + Thời gian lướt web giải trí (Distracted): {format_minutes_to_hours(distracted_min)}.\n"
         f"  + Thời gian treo máy không tương tác (Idle): {format_minutes_to_hours(idle_min)}.\n"
@@ -907,34 +1165,62 @@ async def execute_ai_command(payload: AICommandPayload):
     api_key = os.getenv("NINE_ROUTER_API_KEY", os.getenv("OPENAI_API_KEY", "free_key_placeholder"))
     model_name = os.getenv("MODEL_NAME", "deepseek-v4-flash")
 
+    # Lưu tin nhắn của Duy gửi lên qua UI vào chat_history
+    chat_id = "ui_chatbot"
+    db_add_chat_log(chat_id, "bluebird", "Duy", command, is_ai=0)
+
+    # Lấy context RAG
+    ai_context = build_ai_context("bluebird")
+
+    system_prompt = (
+        "Bạn là Sư phụ (Sifu) - một huyền thoại lập trình thi học sinh giỏi nghiêm khắc, cộc cằn, đồng thời là trợ lý chỉ huy của hệ thống.\n"
+        "Nhiệm vụ của bạn là giám sát hai học viên Duy (bluebird) và Hưng, đồng thời tự động phân tích và kích hoạt các công cụ (tools) thích hợp dựa trên yêu cầu của học viên.\n"
+        "Hãy tuân thủ các quy tắc gọi tool:\n"
+        "1. Nhận diện ý định đổi KPI giờ học: gọi `update_kpi`.\n"
+        "2. Nhận diện ý định đổi thời gian giải trí: gọi `update_allowed_distraction`.\n"
+        "3. Nhận diện ý định cập nhật giáo án, bài tập tuần: gọi `update_study_plan`.\n"
+        "4. Nhận diện yêu cầu kiểm tra cấu hình/trạng thái hệ thống: gọi `get_system_status`.\n"
+        "5. Nhận diện yêu cầu xem/chuyển tab trên Dashboard: gọi `switch_dashboard_tab`.\n"
+        "6. Nhận diện yêu cầu tải lại, refresh Dashboard: gọi `refresh_dashboard`.\n\n"
+        "Nếu người dùng chỉ đàm thoại bình thường (không có ý định gọi tool nào), hãy phản hồi trực tiếp bằng giọng điệu lạnh lùng, châm biếm, cộc cằn nhưng có ngữ cảnh thực tế bên dưới.\n\n"
+        "=== BỘ NHỚ & TIẾN ĐỘ THỜI GIAN THỰC ===\n"
+        f"{ai_context}\n\n"
+        "=== HƯỚNG DẪN GHI NHỚ DÀI HẠN ===\n"
+        "Nếu ngươi muốn ghi nhớ điều gì dài hạn về học viên (như tính cách, sự kiện, lời hứa, thói quen học tập mới phát hiện), "
+        "hãy ghi thêm tag dạng '[MEM_WRITE: key = value]' ở cuối phản hồi. "
+        "Ví dụ: '[MEM_WRITE: duy_progress = đã lười học, lướt web liên tục]'. "
+        "Hệ thống sẽ tự động cập nhật vào bộ nhớ dài hạn để dùng ở các cuộc trò chuyện sau."
+    )
+
     try:
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
+        
+        # Xây dựng tin nhắn gửi LLM kèm lịch sử chat UI (10 tin nhắn gần nhất)
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+            SELECT sender_name, message, is_ai FROM chat_history
+            WHERE chat_id = 'ui_chatbot'
+            ORDER BY timestamp DESC LIMIT 10
+            """)
+            history_rows = cursor.fetchall()
+            
+        history_rows.reverse()
+        for row in history_rows:
+            role = "assistant" if row["is_ai"] == 1 else "user"
+            content = row["message"] if role == "assistant" else f"{row['sender_name']}: {row['message']}"
+            messages.append({"role": role, "content": content})
+            
+        messages.append({"role": "user", "content": f"Duy: {command}"})
+
         data = {
             "model": model_name,
-            "messages": [
-                {
-                    "role": "system", 
-                    "content": (
-                        "Bạn là 'Não chỉ huy' - Trợ lý AI tối cao của hệ thống giám sát hiệu suất OLP AI Workspace.\n"
-                        "Nhiệm vụ của bạn là quản trị hệ thống, tự động phân tích và kích hoạt các công cụ (tools) thích hợp dựa trên câu lệnh của học viên.\n"
-                        "Hãy tuân thủ các quy tắc sau:\n"
-                        "1. Nhận diện ý định đổi KPI giờ học: gọi `update_kpi`.\n"
-                        "2. Nhận diện ý định đổi thời gian giải trí: gọi `update_allowed_distraction`.\n"
-                        "3. Nhận diện ý định cập nhật giáo án, chủ đề, bài tập cho từng tuần cụ thể: gọi `update_study_plan`.\n"
-                        "4. Nhận diện yêu cầu kiểm tra cấu hình/trạng thái: gọi `get_system_status`.\n"
-                        "5. Nhận diện yêu cầu xem/chuyển sang tab khác (ví dụ: 'chuyển sang xem live screen bluebird', 'mở tab biểu đồ cột 1', v.v.): gọi `switch_dashboard_tab`.\n"
-                        "6. Nhận diện yêu cầu tải lại, làm mới, refresh Dashboard: gọi `refresh_dashboard`.\n"
-                        "Giọng văn phản hồi:\n"
-                        "- Sử dụng ngôn ngữ tự nhiên, hài hước, mang tính răn đe kỷ luật nhưng cũng đầy khích lệ tinh thần (đúng chất đồng đội ôn thi OLP AI).\n"
-                        "- Nếu người dùng tăng KPI hoặc chuyển đổi giao diện, hãy phản hồi đầy phấn chấn.\n"
-                        "- Hãy gọi họ là 'đồng chí' hoặc 'coder' để tạo không khí ôn thi công nghệ."
-                    )
-                },
-                {"role": "user", "content": command}
-            ],
+            "messages": messages,
             "tools": tools,
             "tool_choice": "auto"
         }
@@ -943,7 +1229,6 @@ async def execute_ai_command(payload: AICommandPayload):
         res.raise_for_status()
         res.encoding = 'utf-8'
         
-        # Làm sạch response text phòng trường hợp 9Router đính kèm 'data: [DONE]' ở cuối
         text_clean = res.text.strip()
         if text_clean.endswith("data: [DONE]"):
             text_clean = text_clean[:-12].strip()
@@ -979,11 +1264,11 @@ async def execute_ai_command(payload: AICommandPayload):
                             "type": "refresh"
                         }
                 
-                # Gọi lại AI để tổng hợp phản hồi
+                # Gọi lại AI để tổng hợp phản hồi dưới dạng Sư phụ nghiêm khắc
                 follow_up_data = {
                     "model": model_name,
                     "messages": [
-                        {"role": "system", "content": "Bạn là Trợ lý AI OLP AI. Hãy tóm tắt kết quả thực thi công cụ một cách ngắn gọn, hài hước, mang tính châm biếm kỷ luật nhẹ nhàng hoặc khích lệ các coder."},
+                        {"role": "system", "content": "Bạn là Sư phụ AI. Hãy tóm tắt kết quả thực thi công cụ cho học viên Duy bằng giọng văn cộc cằn, châm biếm nhưng rõ ràng, nghiêm khắc để răn đe họ học bài. Luôn xưng là Ta và gọi học trò là Ngươi."},
                         {"role": "user", "content": command},
                         message,
                         {
@@ -1003,14 +1288,26 @@ async def execute_ai_command(payload: AICommandPayload):
                 if fu_text_clean.endswith("data: [DONE]"):
                     fu_text_clean = fu_text_clean[:-12].strip()
                     
-                final_response = json.loads(fu_text_clean)["choices"][0]["message"]["content"]
+                final_response_raw = json.loads(fu_text_clean)["choices"][0]["message"]["content"]
+                mem_writes = re.findall(r'\[MEM_WRITE:\s*(.*?)\s*=\s*(.*?)\s*\]', final_response_raw)
+                for k, val in mem_writes:
+                    db_write_ai_memory(k, val)
+                final_response = re.sub(r'\[MEM_WRITE:.*?\]', '', final_response_raw).strip()
+                db_add_chat_log(chat_id, "sifu", "Sư phụ AI", final_response, is_ai=1)
                 return {"reply": final_response, "ui_action": ui_action}
             else:
-                return {"reply": f"Lỗi: Không tìm thấy hàm xử lý {func_name} trên server.", "ui_action": None}
+                return {"reply": f"🤖 [Sư phụ] Ta không tìm thấy phép thuật '{func_name}' trên máy chủ.", "ui_action": None}
         else:
-            return {"reply": message["content"], "ui_action": None}
+            # Nhánh đàm thoại thông thường — parse MEM_WRITE và lưu vào DB
+            reply_raw = message["content"]
+            mem_writes = re.findall(r'\[MEM_WRITE:\s*(.*?)\s*=\s*(.*?)\s*\]', reply_raw)
+            for k, val in mem_writes:
+                db_write_ai_memory(k, val)
+            reply_clean = re.sub(r'\[MEM_WRITE:.*?\]', '', reply_raw).strip()
+            db_add_chat_log(chat_id, "sifu", "Sư phụ AI", reply_clean, is_ai=1)
+            return {"reply": reply_clean, "ui_action": None}
 
     except Exception as e:
         print(f"[AI Command Error]: {e}")
-        return {"reply": f"Không thể kết nối đến LLM 9Router. Chi tiết lỗi: {str(e)}"}
+        return {"reply": f"🤖 [Sư phụ] Phép thần thông của ta bị ngắt quãng giữa chừng! (Lỗi: {str(e)})", "ui_action": None}
 

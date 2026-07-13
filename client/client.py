@@ -4,6 +4,8 @@ import time
 import json
 import threading
 import requests
+import random
+from datetime import datetime
 from PIL import ImageGrab
 from pynput import mouse, keyboard
 
@@ -24,9 +26,13 @@ except ImportError:
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
-# Biến toàn cục để theo dõi hoạt động của người dùng
+# Biến toàn cục để theo dõi hoạt động của người dùng và số lượng tương tác
 last_activity_time = time.time()
 activity_lock = threading.Lock()
+
+keystroke_count = 0
+click_count = 0
+counters_lock = threading.Lock()
 
 def update_activity(*args, **kwargs):
     """Cập nhật thời gian hoạt động cuối cùng của người dùng."""
@@ -34,9 +40,36 @@ def update_activity(*args, **kwargs):
     with activity_lock:
         last_activity_time = time.time()
 
+def on_mouse_move(x, y):
+    # Chỉ cập nhật mốc hoạt động để chống Idle, không đếm vào click_count
+    update_activity()
+
+def on_mouse_click(x, y, button, pressed):
+    if pressed:
+        update_activity()
+        global click_count
+        with counters_lock:
+            click_count += 1
+
+def on_mouse_scroll(x, y, dx, dy):
+    update_activity()
+    global click_count
+    with counters_lock:
+        click_count += 1
+
+def on_key_press(key):
+    update_activity()
+    global keystroke_count
+    with counters_lock:
+        keystroke_count += 1
+
 # Bắt đầu Listener lắng nghe chuột và phím ở chế độ background
-mouse_listener = mouse.Listener(on_move=update_activity, on_click=update_activity, on_scroll=update_activity)
-keyboard_listener = keyboard.Listener(on_press=update_activity)
+mouse_listener = mouse.Listener(
+    on_move=on_mouse_move, 
+    on_click=on_mouse_click, 
+    on_scroll=on_mouse_scroll
+)
+keyboard_listener = keyboard.Listener(on_press=on_key_press)
 
 mouse_listener.start()
 keyboard_listener.start()
@@ -124,17 +157,23 @@ def main():
     username = config.get("username", "duy").lower()
     idle_threshold = config.get("idle_threshold_seconds", 300)
     check_interval = config.get("check_interval_seconds", 120)
-    live_screen_interval = config.get("live_screen_interval_seconds", 900)
+    
+    # scan_interval mặc định cố định 15 giây để bắt trọn chuyển tab nhanh
+    scan_interval = 15
 
-    print(f"=== OLP AI MONITORING CLIENT STARTED ===")
+    print(f"=== WORKSPACE MONITOR CLIENT STARTED ===")
     print(f"User: {username}")
     print(f"Server URL: {server_url}")
     print(f"Ngưỡng Idle: {idle_threshold} giây")
-    print(f"Thời gian kiểm tra: {check_interval} giây")
-    print(f"Chụp màn hình định kỳ: {live_screen_interval} giây")
+    print(f"Chu kỳ quét cửa sổ: {scan_interval} giây")
+    print(f"Chu kỳ gửi log theo lô: {check_interval} giây")
     print("----------------------------------------")
 
-    last_live_screen_time = 0
+    local_logs_queue = []
+    
+    # Tính mốc chụp ảnh ngẫu nhiên đầu tiên: từ 3 đến 12 phút (180 đến 720 giây) từ bây giờ
+    next_screenshot_time = time.time() + random.randint(180, 720)
+    print(f"[*] Ảnh chụp ngẫu nhiên đầu tiên sẽ diễn ra sau: {int(next_screenshot_time - time.time())} giây.")
 
     while True:
         try:
@@ -148,42 +187,74 @@ def main():
             # 2. Lấy tiêu đề cửa sổ active
             window_title = "Treo máy (Idle)" if is_idle else get_active_window_title()
             
-            print(f"[{time.strftime('%H:%M:%S')}] Active Window: {window_title} | Idle: {is_idle}")
+            # 3. Lấy số lượng tương tác gõ phím/chuột trong 15 giây vừa qua và reset bộ đếm
+            global keystroke_count, click_count
+            with counters_lock:
+                current_keys = keystroke_count
+                current_clicks = click_count
+                keystroke_count = 0
+                click_count = 0
+                
+            print(f"[{time.strftime('%H:%M:%S')}] Quét: {window_title[:45]}... | Phím: {current_keys} | Chuột: {current_clicks} | Idle: {is_idle}")
 
-            # 3. Gửi Log lên VPS
-            payload = {
-                "username": username,
+            # Thêm bản ghi log con vào hàng đợi cục bộ
+            local_logs_queue.append({
                 "window_title": window_title,
-                "is_idle": is_idle
-            }
-            headers = {
-                "X-API-Key": api_key,
-                "Content-Type": "application/json"
-            }
-            
-            log_url = f"{server_url}/api/v1/log"
-            res = requests.post(log_url, json=payload, headers=headers, timeout=10)
-            res.raise_for_status()
-            res_data = res.json()
-            
-            server_status = res_data.get("status", "Learning")
-            
-            # 4. Kiểm tra xem có cần chụp màn hình không
-            # - Chụp nếu đến chu kỳ live screen định kỳ
-            # - Hoặc chụp ngay lập tức nếu Backend phát hiện người dùng đang lơ là ('Distracted') để làm bằng chứng
-            should_capture = (now - last_live_screen_time >= live_screen_interval) or (server_status == "Distracted")
-            
-            if should_capture and not is_idle:
-                capture_and_upload_screenshot(server_url, api_key, username)
-                last_live_screen_time = now
+                "is_idle": is_idle,
+                "keystrokes": current_keys,
+                "clicks": current_clicks,
+                "timestamp": datetime.now().isoformat()
+            })
+
+            # 4. Gửi Log theo lô (Batching) lên VPS khi tích lũy đủ thời gian
+            # Ví dụ: 120s / 15s = 8 logs
+            required_batch_size = max(1, int(check_interval / scan_interval))
+            if len(local_logs_queue) >= required_batch_size:
+                print(f"[*] Đang gửi lô {len(local_logs_queue)} logs lên server...")
+                payload = {
+                    "username": username,
+                    "logs": local_logs_queue
+                }
+                headers = {
+                    "X-API-Key": api_key,
+                    "Content-Type": "application/json"
+                }
+                
+                log_url = f"{server_url}/api/v1/log"
+                res = requests.post(log_url, json=payload, headers=headers, timeout=15)
+                res.raise_for_status()
+                res_data = res.json()
+                
+                print(f"[+] Đã gửi lô log thành công. Phản hồi server: {res_data.get('message', 'OK')}")
+                
+                # Nếu backend phát hiện trạng thái lơ là (Distracted) trong lô log vừa qua
+                # Chúng ta kích hoạt chụp màn hình ngay lập tức làm bằng chứng
+                server_status = res_data.get("status", "Learning")
+                if server_status == "Distracted" and not is_idle:
+                    print("[!] Phát hiện trạng thái Distracted từ Server! Chụp màn hình khẩn cấp...")
+                    capture_and_upload_screenshot(server_url, api_key, username)
+                    # Reset lại bộ đếm chụp ngẫu nhiên
+                    next_screenshot_time = time.time() + random.randint(180, 720)
+                
+                # Giải phóng hàng đợi khi gửi thành công
+                local_logs_queue.clear()
+
+            # 5. Chụp ảnh màn hình ngẫu nhiên (Random Capture)
+            if now >= next_screenshot_time:
+                if not is_idle:
+                    print(f"[*] Đến giờ chụp ảnh ngẫu nhiên...")
+                    capture_and_upload_screenshot(server_url, api_key, username)
+                # Tính mốc tiếp theo bất kể có idle hay không
+                next_screenshot_time = time.time() + random.randint(180, 720)
+                print(f"[*] Ảnh chụp ngẫu nhiên tiếp theo sau: {int(next_screenshot_time - time.time())} giây.")
 
         except requests.exceptions.RequestException as e:
             print(f"[{time.strftime('%H:%M:%S')}] Lỗi kết nối Server VPS: {e}")
         except Exception as e:
             print(f"[{time.strftime('%H:%M:%S')}] Lỗi hệ thống: {e}")
 
-        # Ngủ check_interval giây rồi lặp lại
-        time.sleep(check_interval)
+        # Ngủ scan_interval (15s) rồi quét tiếp
+        time.sleep(scan_interval)
 
 if __name__ == "__main__":
     try:

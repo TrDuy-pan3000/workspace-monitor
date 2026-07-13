@@ -22,9 +22,21 @@ def init_db():
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
         window_title TEXT,
         status TEXT NOT NULL, -- 'Learning', 'Distracted', 'Idle'
-        efficiency INTEGER NOT NULL -- Điểm từ 0 đến 100
+        efficiency INTEGER NOT NULL, -- Điểm từ 0 đến 100
+        keystrokes INTEGER DEFAULT 0,
+        clicks INTEGER DEFAULT 0
     )
     """)
+
+    # Đảm bảo các cột mới tồn tại nếu database đã được khởi tạo từ trước
+    try:
+        cursor.execute("ALTER TABLE user_logs ADD COLUMN keystrokes INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cursor.execute("ALTER TABLE user_logs ADD COLUMN clicks INTEGER DEFAULT 0")
+    except sqlite3.OperationalError:
+        pass
 
     # Index giúp truy vấn log nhanh hơn
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_logs_user_time ON user_logs (username, timestamp)")
@@ -54,6 +66,28 @@ def init_db():
         week_number INTEGER PRIMARY KEY,
         topic TEXT NOT NULL,
         tasks TEXT NOT NULL -- Lưu danh sách tác vụ
+    )
+    """)
+
+    # 5. Bảng chat_history
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id TEXT,
+        username TEXT,
+        sender_name TEXT,
+        message TEXT,
+        is_ai INTEGER DEFAULT 0, -- 1 nếu là AI trả lời, 0 nếu là user chat
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+
+    # 6. Bảng ai_memories
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS ai_memories (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
     """)
 
