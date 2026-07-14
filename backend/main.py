@@ -40,8 +40,11 @@ last_telegram_alert_time = {}
 # --- HELPER FUNCTIONS FOR DATABASE ---
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 def get_config(key: str, default: str = "") -> str:
@@ -506,9 +509,30 @@ def proactive_alert_daemon():
 @app.on_event("startup")
 def startup_event():
     import threading
+
+    # Telegram polling
     threading.Thread(target=telegram_polling_loop, daemon=True).start()
+
+    # Proactive alert daemon
     threading.Thread(target=proactive_alert_daemon, daemon=True).start()
-    print("[Startup] Telegram polling thread và Proactive Alert Daemon đã khởi động.")
+
+    # Agent Sifu V2 - start daemon thread with safe import
+    try:
+        from agent_sifu_v2 import agent_main_loop
+
+        def _safe_agent():
+            try:
+                agent_main_loop()
+            except Exception as ex:
+                print(f"[Agent Sifu] Thread exited: {ex}")
+
+        t = threading.Thread(target=_safe_agent, daemon=True)
+        t.start()
+        print("[Startup] Agent Sifu V2 daemon thread started.")
+    except Exception as excep:
+        print(f"[Startup] Cannot start Agent Sifu V2: {excep}")
+
+    print("[Startup] Telegram polling thread va Proactive Alert Daemon da khoi dong.")
 
 
 # --- HYBRID CLASSIFICATION ENGINE ---
@@ -609,7 +633,7 @@ def classify_window_title(window_title: str) -> tuple[str, int]:
 # --- CORE API ENDPOINTS ---
 
 @app.post("/api/v1/log")
-async def log_client_data(payload: BatchLogPayload, x_api_key: Optional[str] = Header(None)):
+def log_client_data(payload: BatchLogPayload, x_api_key: Optional[str] = Header(None)):
     # Xác thực API Key
     stored_key = get_config("api_key", "default_olp_key_2026")
     if not x_api_key or x_api_key != stored_key:
@@ -700,7 +724,7 @@ async def log_client_data(payload: BatchLogPayload, x_api_key: Optional[str] = H
     return {"success": True, "status": final_status, "efficiency": last_efficiency, "message": f"Logged {len(payload.logs)} items."}
 
 @app.post("/api/v1/live-screen")
-async def upload_live_screen(
+def upload_live_screen(
     username: str = Form(...),
     file: UploadFile = File(...),
     x_api_key: Optional[str] = Header(None)
@@ -713,7 +737,7 @@ async def upload_live_screen(
     # Lưu file đè lên ảnh mới nhất của user
     file_path = os.path.join(STATIC_DIR, f"latest_{username}.jpg")
     try:
-        contents = await file.read()
+        contents = file.file.read()
         with open(file_path, "wb") as f:
             f.write(contents)
     except Exception as e:
@@ -722,7 +746,7 @@ async def upload_live_screen(
     return {"success": True, "file_url": f"/static/latest_{username}.jpg"}
 
 @app.get("/api/v1/dashboard/stats")
-async def get_dashboard_stats():
+def get_dashboard_stats():
     today = datetime.now().date()
     today_start = datetime(today.year, today.month, today.day).isoformat()
 
@@ -836,7 +860,7 @@ def calculate_streak(usernames: list[str], kpi_hours: float) -> int:
     return streak
 
 @app.get("/api/v1/dashboard/chart")
-async def get_dashboard_chart(username: str):
+def get_dashboard_chart(username: str):
     username = username.lower()
     today = datetime.now().date()
     today_start = datetime(today.year, today.month, today.day).isoformat()
@@ -885,7 +909,7 @@ async def get_dashboard_chart(username: str):
     }
 
 @app.get("/api/v1/study-plan")
-async def get_study_plan():
+def get_study_plan():
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT week_number, topic, tasks FROM study_plan ORDER BY week_number DESC")
@@ -1004,7 +1028,7 @@ AI_FUNCTIONS = {
 }
 
 @app.post("/api/v1/ai/command")
-async def execute_ai_command(payload: AICommandPayload):
+def execute_ai_command(payload: AICommandPayload):
     command = payload.command.strip()
     if not command:
         raise HTTPException(status_code=400, detail="Lệnh không được để trống.")

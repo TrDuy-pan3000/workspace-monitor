@@ -4,9 +4,12 @@ import os
 DB_PATH = os.path.join(os.path.dirname(__file__), "database.db")
 
 def get_connection():
-    """Tạo kết nối đến SQLite database."""
-    conn = sqlite3.connect(DB_PATH)
+    """Tạo kết nối đến SQLite database với WAL mode + timeout."""
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 def init_db():
