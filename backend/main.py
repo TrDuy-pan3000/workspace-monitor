@@ -33,6 +33,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "database.db")
 
+
+# In-memory LRU cache for window title classification (avoids nested SQLite writes)
+_title_classification_cache = {}
+_TITLE_CACHE_MAX = 5000
+
 # Lưu vết thời gian gửi cảnh báo Telegram gần nhất của từng user để tránh spam liên tục
 # key: username, value: timestamp
 last_telegram_alert_time = {}
@@ -46,6 +51,17 @@ def get_db():
     conn.execute("PRAGMA busy_timeout=30000")
     conn.execute("PRAGMA synchronous=NORMAL")
     return conn
+
+
+def _get_title_cache(title: str):
+    return _title_classification_cache.get(title)
+
+def _set_title_cache(title: str, status: str, efficiency: int):
+    _title_classification_cache[title] = (status, efficiency)
+    if len(_title_classification_cache) > _TITLE_CACHE_MAX:
+        cutoff = len(_title_classification_cache) // 5
+        for k in list(_title_classification_cache.keys())[:cutoff]:
+            del _title_classification_cache[k]
 
 def get_config(key: str, default: str = "") -> str:
     with get_db() as conn:
@@ -516,19 +532,24 @@ def startup_event():
     # Proactive alert daemon
     threading.Thread(target=proactive_alert_daemon, daemon=True).start()
 
-    # Agent Sifu V2 - start daemon thread with safe import
+    # Agent Sifu V2 - lazy import (avoid blocking startup)
     try:
-        from agent_sifu_v2 import agent_main_loop
+        import importlib
+        sifu_mod = importlib.import_module('agent_sifu_v2')
+        agent_main_loop = getattr(sifu_mod, 'agent_main_loop', None)
+        if agent_main_loop:
 
-        def _safe_agent():
-            try:
-                agent_main_loop()
-            except Exception as ex:
-                print(f"[Agent Sifu] Thread exited: {ex}")
+            def _safe_agent():
+                try:
+                    agent_main_loop()
+                except Exception as ex:
+                    print(f"[Agent Sifu] Thread exited: {ex}")
 
-        t = threading.Thread(target=_safe_agent, daemon=True)
-        t.start()
-        print("[Startup] Agent Sifu V2 daemon thread started.")
+            t = threading.Thread(target=_safe_agent, daemon=True)
+            t.start()
+            print("[Startup] Agent Sifu V2 daemon thread started.")
+        else:
+            print("[Startup] agent_main_loop not found in agent_sifu_v2")
     except Exception as excep:
         print(f"[Startup] Cannot start Agent Sifu V2: {excep}")
 
@@ -564,12 +585,18 @@ def classify_window_title(window_title: str) -> tuple[str, int]:
         if re.search(pattern, title_clean, re.IGNORECASE):
             return "Distracted", 10
 
+    # 1b. Tra cứu trong In-Memory Cache (nhanh, không lock)
+    cached = _get_title_cache(title_clean)
+    if cached:
+        return cached[0], cached[1]
+
     # 2. Tra cứu trong Cache SQLite
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT status, efficiency FROM title_classification_cache WHERE window_title = ?", (title_clean,))
         row = cursor.fetchone()
         if row:
+            _set_title_cache(title_clean, row["status"], row["efficiency"])
             return row["status"], row["efficiency"]
 
     # 3. Gọi AI qua 9Router làm phương án cuối cùng
@@ -600,7 +627,7 @@ def classify_window_title(window_title: str) -> tuple[str, int]:
             "temperature": 0.0,
             "response_format": {"type": "json_object"}
         }
-        res = requests.post(nine_router_url, headers=headers, json=data, timeout=12)
+        res = requests.post(nine_router_url, headers=headers, json=data, timeout=5)
         res.raise_for_status()
         res.encoding = 'utf-8'
         
@@ -616,13 +643,19 @@ def classify_window_title(window_title: str) -> tuple[str, int]:
         status = result.get("status", "Learning")
         efficiency = int(result.get("efficiency", 80))
 
-        # Lưu lại vào cache
-        with get_db() as conn:
-            conn.cursor().execute("""
-            INSERT OR REPLACE INTO title_classification_cache (window_title, status, efficiency)
-            VALUES (?, ?, ?)
-            """, (title_clean, status, efficiency))
-            conn.commit()
+        # Lưu vào in-memory cache (luôn thành công)
+        _set_title_cache(title_clean, status, efficiency)
+
+        # Lưu vào SQLite cache (best-effort, không block)
+        try:
+            with get_db() as conn:
+                conn.cursor().execute("""
+                INSERT OR REPLACE INTO title_classification_cache (window_title, status, efficiency)
+                VALUES (?, ?, ?)
+                """, (title_clean, status, efficiency))
+                conn.commit()
+        except Exception:
+            pass
 
         return status, efficiency
 
@@ -797,6 +830,7 @@ def get_dashboard_stats():
 
         stats[user] = {
             "username": user,
+            "display_name": "Duy" if user == "bluebird" else "Hung" if user in ["hungadu", "partner"] else user.capitalize(),
             "status": current_status,
             "current_title": current_title,
             "efficiency": current_efficiency,

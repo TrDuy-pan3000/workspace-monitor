@@ -6,6 +6,18 @@ const API_BASE_URL = window.location.origin.includes('localhost') || window.loca
         : window.location.origin;
 
 // Lưu trữ instance của các biểu đồ Chart.js để cập nhật động theo cột 1 và cột 2
+const USER_NAMES = {
+    "bluebird": "Duy",
+    "hungadu": "Hung",
+    "partner": "Hung"
+};
+
+const USER_EMOJIS = {
+    "bluebird": "🔥",
+    "hungadu": "💪",
+    "partner": "💪"
+};
+
 const charts = {
     1: { pie: null, line: null },
     2: { pie: null, line: null }
@@ -211,9 +223,9 @@ function updateUserUI(colNum, userData) {
     }
     
     // Trường hợp có dữ liệu thành viên thật (Đồng bộ động)
-    const displayName = userData.username.charAt(0).toUpperCase() + userData.username.slice(1);
+    const displayName = USER_NAMES[userData.username] || userData.username.charAt(0).toUpperCase() + userData.username.slice(1);
     nameEl.innerText = displayName;
-    avatarEl.innerText = userData.username.charAt(0).toUpperCase();
+    avatarEl.innerText = USER_EMOJIS[userData.username] || userData.username.charAt(0).toUpperCase();
     hoursEl.innerText = formatHours(userData.learning_hours);
     percentEl.innerText = `${userData.kpi_percent}%`;
     barEl.style.width = `${userData.kpi_percent}%`;

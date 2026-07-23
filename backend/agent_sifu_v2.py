@@ -13,6 +13,29 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ─── CONFIG ───────────────────────────────────────────────
+# Retry decorator for SQLITE_BUSY
+import functools
+import sqlite3 as _sc
+
+def _db_retry(max_attempts=3, delay=0.1):
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_attempts):
+                try:
+                    return f(*args, **kwargs)
+                except _sc.OperationalError as e:
+                    if 'locked' in str(e).lower() and attempt < max_attempts - 1:
+                        import time
+                        time.sleep(delay * (2 ** attempt))
+                        continue
+                    raise
+                except Exception:
+                    raise
+            return f(*args, **kwargs)
+        return wrapper
+    return decorator
+
 DB_PATH = os.path.join(os.path.dirname(__file__), "database.db")
 API_BASE = os.getenv("OPENAI_API_BASE", "http://9router:20128/v1").rstrip("/")
 API_URL = os.getenv("NINE_ROUTER_URL", f"{API_BASE}/chat/completions")
@@ -20,7 +43,32 @@ API_KEY = os.getenv("NINE_ROUTER_API_KEY", os.getenv("OPENAI_API_KEY", "free_key
 MODEL = os.getenv("MODEL_NAME", "combo")
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1003801560523")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "-1004201138641")
+
+# ─── USER MAPPING ─────────────────────────────────────────
+USER_MAP = {
+    "bluebird": {"display": "Duy", "telegram_names": ["duy", "bluebird", "truong duy", "võ phạm trường duy"]},
+    "partner": {"display": "Hung", "telegram_names": ["hung", "hungadu", "partner", "hưng", "hùng"]},
+    "hungadu": {"display": "Hung", "telegram_names": ["hungadu", "hung", "hưng"]},
+}
+
+def resolve_user(username: str = "", first_name: str = "") -> tuple[str, str]:
+    """Map Telegram user -> (system_username, display_name)."""
+    uname = username.lower().strip()
+    fname = first_name.lower().strip()
+    for sys_name, info in USER_MAP.items():
+        if uname == sys_name:
+            return sys_name, info["display"]
+        if uname in info["telegram_names"]:
+            return sys_name, info["display"]
+        if fname in info["telegram_names"]:
+            return sys_name, info["display"]
+    # Fallback: check first_name against display names
+    for sys_name, info in USER_MAP.items():
+        if fname == info["display"].lower():
+            return sys_name, info["display"]
+    # Default to partner if unknown
+    return "partner", "Hung"
 
 # ─── DB HELPERS ───────────────────────────────────────────
 def get_db():
@@ -207,10 +255,21 @@ TOOL_DEFINITIONS = [
     {"type": "function", "function": {"name": "kiem_tra_dao_tam", "description": "Phan tich hanh vi gan day cua do de", "parameters": {"type": "object", "properties": {"username": {"type": "string"}, "hours": {"type": "number"}}, "required": ["username"]}}}
 ]
 
+TOOL_MAP = {
+    "tra_cuu_mon_do": None,  # defined below
+    "kiem_tra_canh_gioi": None,
+    "dieu_chinh_canh_gioi": None,
+    "chap_but_nghi_nho": None,
+    "thinh_giao": None,
+    "xem_giao_an": None,
+    "soan_giao_an": None,
+    "kiem_tra_dao_tam": None,
+}
+
 # ─── TOOL IMPLEMENTATIONS ────────────────────────────────
 def tool_tra_cuu_mon_do(username: str, hours: float = 2) -> str:
     since = (datetime.now() - timedelta(hours=hours)).isoformat()
-    display = "Duy" if username == "bluebird" else "Hung"
+    display = USER_MAP.get(username, {}).get("display", username)
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT status, window_title, efficiency, timestamp FROM user_logs WHERE username=? AND timestamp>=? ORDER BY timestamp DESC LIMIT 200", (username, since))
@@ -227,7 +286,8 @@ def tool_tra_cuu_mon_do(username: str, hours: float = 2) -> str:
 
 def tool_kiem_tra_canh_gioi() -> str:
     lines = []
-    for uname, dname in [("bluebird", "Duy"), ("partner", "Hung")]:
+    for uname in USER_MAP:
+        dname = USER_MAP[uname]["display"]
         lines.append(tool_tra_cuu_mon_do(uname, 4))
         lines.append("")
     with get_db() as conn:
@@ -258,8 +318,7 @@ def tool_chap_but_nghi_nho(key: str, value: str, category: str = "general"):
     return f"Da ghi nho: {key} = {value[:80]}..."
 
 def tool_thinh_giao(message: str) -> str:
-    escaped = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-    tg_send(f"🧘 <b>[Su Phu diem danh]</b>\n\n{escaped}")
+    tg_send(f"🧘 [Su Phu diem danh]\n\n{message}")
     return f"Da gui: {message[:60]}..."
 
 def tool_xem_giao_an() -> str:
@@ -279,13 +338,13 @@ def tool_soan_giao_an(week_number: int, topic: str, tasks: str) -> str:
 
 def tool_kiem_tra_dao_tam(username: str, hours: float = 24) -> str:
     since = (datetime.now() - timedelta(hours=hours)).isoformat()
+    display = USER_MAP.get(username, {}).get("display", username)
     with get_db() as conn:
         c = conn.cursor()
         c.execute("SELECT status, COUNT(*) as cnt FROM user_logs WHERE username=? AND timestamp>=? GROUP BY status", (username, since))
         stats = {r["status"]: r["cnt"] for r in c.fetchall()}
         c.execute("SELECT window_title, COUNT(*) as cnt FROM user_logs WHERE username=? AND timestamp>=? AND status='Distracted' GROUP BY window_title ORDER BY cnt DESC LIMIT 5", (username, since))
         distractions = c.fetchall()
-    display = "Duy" if username == "bluebird" else "Hung"
     total = sum(stats.values()) if stats else 0
     if total == 0:
         return f"{display} khong co du lieu trong {hours}h qua."
@@ -298,16 +357,15 @@ def tool_kiem_tra_dao_tam(username: str, hours: float = 24) -> str:
     result += f"  • Ket luan: {assessment}"
     return result
 
-TOOL_MAP = {
-    "tra_cuu_mon_do": tool_tra_cuu_mon_do,
-    "kiem_tra_canh_gioi": tool_kiem_tra_canh_gioi,
-    "dieu_chinh_canh_gioi": tool_dieu_chinh_canh_gioi,
-    "chap_but_nghi_nho": tool_chap_but_nghi_nho,
-    "thinh_giao": tool_thinh_giao,
-    "xem_giao_an": tool_xem_giao_an,
-    "soan_giao_an": tool_soan_giao_an,
-    "kiem_tra_dao_tam": tool_kiem_tra_dao_tam,
-}
+# Fill TOOL_MAP
+TOOL_MAP["tra_cuu_mon_do"] = tool_tra_cuu_mon_do
+TOOL_MAP["kiem_tra_canh_gioi"] = tool_kiem_tra_canh_gioi
+TOOL_MAP["dieu_chinh_canh_gioi"] = tool_dieu_chinh_canh_gioi
+TOOL_MAP["chap_but_nghi_nho"] = tool_chap_but_nghi_nho
+TOOL_MAP["thinh_giao"] = tool_thinh_giao
+TOOL_MAP["xem_giao_an"] = tool_xem_giao_an
+TOOL_MAP["soan_giao_an"] = tool_soan_giao_an
+TOOL_MAP["kiem_tra_dao_tam"] = tool_kiem_tra_dao_tam
 
 # ─── SYSTEM PROMPT ──────────────────────────────────────
 SYSTEM_PROMPT = """Nguoi la Doc Co Cau Bai - mot kiem si lap di, tu luyen code da 40 nam, nay lui ve lam Su Phu cho hai ten do de ngu xuan la Duy va Hung.
@@ -342,6 +400,7 @@ NGUYEN TAC:
 3. Ghi nho moi hanh vi dang chu y qua chap_but_nghi_nho
 4. Tra loi ngan gon, sac ben, 4 cau
 5. LUON goi tool khi can
+6. NHO goi dung ten do de: bluebird=Duy, partner=Hung, hungadu=Hung
 
 Hay the hien ban linh cua Doc Co Cau Bai!"""
 
@@ -401,6 +460,7 @@ class TriggerEngine:
     def __init__(self, agent: AgentSifu):
         self.agent = agent
         self.last_alert_time = {}
+        self.last_15min_reminder = datetime.now()
         self.last_30min_report = datetime.now() - timedelta(minutes=30)
         self.last_2h_encourage = datetime.now()
         self.last_idle_warning = {}
@@ -408,7 +468,7 @@ class TriggerEngine:
     def check_new_logs(self):
         with get_db() as conn:
             c = conn.cursor()
-            for uname in ["bluebird", "partner"]:
+            for uname in USER_MAP:
                 c.execute("SELECT status, window_title, timestamp FROM user_logs WHERE username=? ORDER BY timestamp DESC LIMIT 40", (uname,))
                 logs = c.fetchall()
                 if not logs:
@@ -422,7 +482,7 @@ class TriggerEngine:
                     else:
                         break
                 dist_minutes = dist_count * 15 / 60
-                display = "Duy" if uname == "bluebird" else "Hung"
+                display = USER_MAP.get(uname, {}).get("display", uname)
                 key = f"dist_{uname}"
                 if 5 <= dist_minutes < 30:
                     last = self.last_alert_time.get(key, 0)
@@ -446,13 +506,45 @@ class TriggerEngine:
                 except (ValueError, KeyError):
                     pass
 
+    def check_15min_reminder(self):
+        """Nhắc nhở mỗi 15 phút — gửi thinh_giao hỏi thăm + tạo động lực."""
+        now = datetime.now()
+        if (now - self.last_15min_reminder).total_seconds() < 900:  # 15 min
+            return
+        self.last_15min_reminder = now
+        active_users = []
+        with get_db() as conn:
+            c = conn.cursor()
+            for uname in USER_MAP:
+                c.execute("SELECT status, COUNT(*) as cnt FROM user_logs WHERE username=? AND timestamp>=? GROUP BY status", (uname, now.date().isoformat()))
+                stats = {r["status"]: r["cnt"] for r in c.fetchall()}
+                learn_h = round(stats.get("Learning", 0) * 15 / 3600, 2) if stats else 0
+                c.execute("SELECT status FROM user_logs WHERE username=? ORDER BY timestamp DESC LIMIT 1", (uname,))
+                row = c.fetchone()
+                status = row["status"] if row else "Offline"
+                active_users.append((uname, USER_MAP.get(uname, {}).get("display", uname), status, learn_h))
+        # Tạo lời nhắc
+        parts = []
+        for sys_name, display, status, learn_h in active_users:
+            if status == "Learning":
+                parts.append(f"• <b>{display}</b>: dang tu luyen ({learn_h}h hom nay) 💪")
+            elif status == "Distracted":
+                parts.append(f"• <b>{display}</b>: tau hoa nhap ma! 🔥")
+            elif status == "Idle":
+                parts.append(f"• <b>{display}</b>: treo kiem..." if status == "Idle" else "• <b>{display}</b>: offline")
+            else:
+                parts.append(f"• <b>{display}</b>: offline")
+        msg = "🧘 <b>[Su Phu diem danh 15 phut]</b>\n\n" + "\n".join(parts) + "\n\nNho: Luyen kiem khong kho, kho la luyen moi ngay! 📜"
+        save_event("reminder_15min", json.dumps({"type": "15min_reminder", "text": msg}), priority=2)
+
     def check_30min_cycle(self):
         now = datetime.now()
         if (now - self.last_30min_report).total_seconds() < 1800:
             return
         self.last_30min_report = now
         lines = []
-        for uname, dname in [("bluebird", "Duy"), ("partner", "Hung")]:
+        for uname in USER_MAP:
+            dname = USER_MAP[uname]["display"]
             with get_db() as conn:
                 c = conn.cursor()
                 today = now.date().isoformat()
@@ -477,7 +569,8 @@ class TriggerEngine:
         if (now - self.last_2h_encourage).total_seconds() < 7200:
             return
         self.last_2h_encourage = now
-        for uname, dname in [("bluebird", "Duy"), ("partner", "Hung")]:
+        for uname in USER_MAP:
+            dname = USER_MAP[uname]["display"]
             with get_db() as conn:
                 c = conn.cursor()
                 today = now.date().isoformat()
@@ -490,6 +583,7 @@ class TriggerEngine:
     def run_once(self):
         try:
             self.check_new_logs()
+            self.check_15min_reminder()
             self.check_30min_cycle()
             self.check_2h_encourage()
         except Exception as e:
@@ -532,8 +626,13 @@ def process_events():
                 d = edata
                 prompt = f"Do de {d['display']} bien mat {d['minutes']}p! thinh_giao de goi ve!"
                 agent.process(prompt)
+            elif etype == "reminder_15min":
+                d = edata
+                prompt = d.get("text", "15 phut da troi qua! thinh_giao nhac do de luyen kiem.")
+                agent.process(prompt)
             elif etype == "cycle_30min":
-                prompt = "30 phut. Kiem tra KPI bang kiem_tra_canh_gioi. Neu can, thinh_giao. Giong kiem hiep."
+                s = edata.get("summary", "")
+                prompt = f"30 phut da qua. KPI: {s}. Kiem tra canh gioi bang kiem_tra_canh_gioi. thinh_giao neu can. Giong kiem hiep."
                 agent.process(prompt)
             elif etype == "milestone":
                 d = edata
@@ -547,12 +646,11 @@ def process_events():
 
 # ─── TELEGRAM HANDLER ─────────────────────────────────────
 def handle_telegram_message_v2(text: str, username: str, display_name: str, chat_id: str, message_id: int):
-    mapped = "bluebird" if (username == "bluebird" or "duy" in display_name.lower()) else "partner"
-    mapped_display = "Duy" if mapped == "bluebird" else "Hung"
+    mapped, mapped_display = resolve_user(username, display_name)
     with get_db() as conn:
         conn.cursor().execute("INSERT INTO chat_history (chat_id, username, sender_name, message, is_ai) VALUES (?, ?, ?, ?, 0)", (str(chat_id), mapped, mapped_display, text))
         conn.commit()
-    prompt = f"Do de {mapped_display} (@{mapped}) vua hoi: \"{text}\"\n\nTra cuu thong tin that roi tra loi."
+    prompt = f"Do de {mapped_display} (@{mapped}) vua hoi: \"{text}\"\n\nTra cuu thong tin cua do de {mapped} that roi tra loi. Nho xung ho dung ten!"
     response = get_sifu_agent().process(prompt)
     if response and TELEGRAM_TOKEN:
         try:
@@ -574,7 +672,8 @@ def generate_weekly_report():
     lines = [f"📜 <b>BAO CAO TUAN {week_number}</b> 📜", f"{now.strftime('%d/%m/%Y')}\n"]
     with get_db() as conn:
         c = conn.cursor()
-        for uname, dname in [("bluebird", "Duy"), ("partner", "Hung")]:
+        for uname in USER_MAP:
+            dname = USER_MAP[uname]["display"]
             c.execute("SELECT COUNT(*) as cnt FROM user_logs WHERE username=? AND timestamp>=? AND status='Learning'", (uname, week_start))
             learn_h = round(c.fetchone()["cnt"] * 15 / 3600, 2)
             c.execute("SELECT COUNT(*) as cnt FROM user_logs WHERE username=? AND timestamp>=? AND status='Distracted'", (uname, week_start))
@@ -640,7 +739,7 @@ def agent_main_loop():
                 if (is_private or is_mentioned) and text and not is_bot:
                     handle_telegram_message_v2(text, username, first_name, chat_id, msg["message_id"])
             now = time.time()
-            if now - last_trigger_check > 30:
+            if now - last_trigger_check > 10:  # check mỗi 10s thay vì 30s
                 get_trigger_engine().run_once()
                 last_trigger_check = now
             process_events()

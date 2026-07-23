@@ -1,0 +1,8 @@
+{
+  "server_url": "http://147.182.134.43:8000",
+  "api_key": "default_olp_key_2026",
+  "username": "hungadu",
+  "idle_threshold_seconds": 300,
+  "check_interval_seconds": 120,
+  "live_screen_interval_seconds": 900
+}
